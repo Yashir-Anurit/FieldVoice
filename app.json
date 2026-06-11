@@ -13,7 +13,11 @@
       "backgroundColor": "#ffffff"
     },
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSMicrophoneUsageDescription": "FieldVoice needs microphone access to record sales visit notes.",
+        "NSSpeechRecognitionUsageDescription": "FieldVoice needs speech recognition access to transcribe sales visit notes live."
+      }
     },
     "android": {
       "adaptiveIcon": {
@@ -21,10 +25,24 @@
         "backgroundColor": "#ffffff"
       },
       "edgeToEdgeEnabled": true,
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "permissions": [
+        "android.permission.RECORD_AUDIO",
+        "android.permission.RECORD_AUDIO"
+      ],
+      "package": "com.anonymous.FieldVoice"
     },
     "web": {
       "favicon": "./assets/favicon.png"
-    }
+    },
+    "plugins": [
+      [
+        "expo-speech-recognition",
+        {
+          "microphonePermission": "FieldVoice needs microphone access to record sales visit notes.",
+          "speechRecognitionPermission": "FieldVoice needs speech recognition access to transcribe sales visit notes live."
+        }
+      ]
+    ]
   }
 }

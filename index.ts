@@ -1,3 +1,8 @@
+// Polyfill Symbol.asyncIterator for React Native / Hermes (fixes OpenRouter streaming loop error)
+if (typeof Symbol.asyncIterator === 'undefined') {
+  (Symbol as any).asyncIterator = Symbol.for('Symbol.asyncIterator');
+}
+
 import { registerRootComponent } from 'expo';
 
 import App from './App';
