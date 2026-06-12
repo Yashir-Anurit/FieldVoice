@@ -10,7 +10,11 @@ const AZURE_MODEL =
   'gpt-4o-mini-transcribe';
 
 const AZURE_API_KEY =
-  '2gk1IOjseIIjOyLMqBalGeIkx98v26L3T9bxfETmBl8DNkoKhtPXJQQJ99CFACHYHv6XJ3w3AAAAACOGk9DF';
+  process.env.EXPO_PUBLIC_AZURE_API_KEY || '';
+
+if (!AZURE_API_KEY && Platform.OS !== 'web') {
+  console.warn('Warning: EXPO_PUBLIC_AZURE_API_KEY environment variable is not defined.');
+}
 
 // Dynamically load ExpoSpeechRecognition to prevent crash in Expo Go
 let ExpoSpeechRecognitionModule: any = null;
