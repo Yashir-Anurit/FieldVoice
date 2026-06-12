@@ -8,8 +8,10 @@ export interface RepProfile {
 }
 
 export interface ApiCredentials {
-  openrouter: string;
-  openrouterModel: string;
+  geminiKey: string;
+  azureSpeechKey?: string;
+  azureSpeechRegion?: string;
+  azureSpeechEndpoint?: string;
 }
 
 export interface Account {
@@ -36,6 +38,7 @@ export interface Opportunity {
   amount: string;
   closeDate: string;
   accountId: string;
+  accountName?: string;
 }
 
 export interface ProductCategory {

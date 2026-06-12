@@ -1,6 +1,16 @@
 import { Audio } from 'expo-av';
 import { NativeModules, Platform } from 'react-native';
+import { ExpoWebSpeechRecognition } from 'expo-speech-recognition';
 import { demoScenarios } from './mockData';
+
+const AZURE_OPENAI_ENDPOINT =
+  'https://audio-to-text-model-resource.cognitiveservices.azure.com/openai/deployments/gpt-4o-mini-transcribe/audio/transcriptions?api-version=2025-03-01-preview';
+
+const AZURE_MODEL =
+  'gpt-4o-mini-transcribe';
+
+const AZURE_API_KEY =
+  '2gk1IOjseIIjOyLMqBalGeIkx98v26L3T9bxfETmBl8DNkoKhtPXJQQJ99CFACHYHv6XJ3w3AAAAACOGk9DF';
 
 // Dynamically load ExpoSpeechRecognition to prevent crash in Expo Go
 let ExpoSpeechRecognitionModule: any = null;
@@ -43,6 +53,7 @@ class TranscriptionService {
   private speechHandlers: SpeechRecognitionHandlers | null = null;
   private webSpeechRecognition: any = null;
   private nativeSubscriptions: { remove: () => void }[] = [];
+  private activeRecognition: any = null;
 
   async requestPermissions(): Promise<boolean> {
     const { status } = await Audio.requestPermissionsAsync();
@@ -104,66 +115,134 @@ class TranscriptionService {
 
   async transcribeAudio(
     audioUri: string,
-    openaiApiKey?: string,
     customVocabulary?: string[]
   ): Promise<TranscriptionResult> {
-    if (!openaiApiKey) {
-      // Simulate transcription fallback
-      return new Promise((resolve) => {
-        setTimeout(() => {
-          resolve({
-            text: "Simulated transcription: We met with Ceres Grain Corp and Gregory Peck to buy Alfalfa Seed for forty thousand dollars, closing in December.",
-            isMock: true,
-          });
-        }, 1500);
-      });
-    }
-
     try {
-      // Live transcription via OpenAI Whisper API
+
+      console.log('Transcription Started');
       const formData = new FormData();
-      
-      // Construct file object
-      const filename = audioUri.split('/').pop() || 'recording.m4a';
+
+      const filename =
+        audioUri.split('/').pop() || 'recording.m4a';
+
       const match = /\.(\w+)$/.exec(filename);
       const ext = match ? match[1] : 'm4a';
-      const type = `audio/${ext}`;
-      
+
       formData.append('file', {
         uri: audioUri,
         name: filename,
-        type,
+        type: `audio/${ext}`,
       } as any);
-      formData.append('model', 'whisper-1');
-      
-      if (customVocabulary && customVocabulary.length > 0) {
-        formData.append('prompt', customVocabulary.join(', '));
+
+      formData.append('model', AZURE_MODEL);
+
+      if (
+        customVocabulary &&
+        customVocabulary.length > 0
+      ) {
+        formData.append(
+          'prompt',
+          customVocabulary.join(', ')
+        );
       }
 
-      const response = await fetch('https://api.openai.com/v1/audio/transcriptions', {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${openaiApiKey}`,
-          'Content-Type': 'multipart/form-data',
-        },
-        body: formData,
-      });
+      const response = await fetch(
+        AZURE_OPENAI_ENDPOINT,
+        {
+          method: 'POST',
+          headers: {
+            'api-key': AZURE_API_KEY,
+          },
+          body: formData,
+        }
+      );
+
+      console.log("Transcription Response: ", response);
 
       if (!response.ok) {
-        const errText = await response.text();
-        throw new Error(`Whisper API error: ${response.status} - ${errText}`);
+        const txt = await response.text();
+        console.log("Transcription Failed: ", txt);
+        throw new Error(
+          `Azure transcription failed: ${txt}`
+        );
       }
 
       const data = await response.json();
+      console.log("Transcription Data: ", data);
+      console.log("Transcription Completed: ", data.text);
+
       return {
-        text: data.text,
+        text: data.text || '',
         isMock: false,
       };
     } catch (error) {
-      console.error('Transcription error, falling back to simulation', error);
+      console.error(error);
       throw error;
     }
   }
+
+  // async transcribeAudio(
+  //   audioUri: string,
+  //   openaiApiKey?: string,
+  //   customVocabulary?: string[]
+  // ): Promise<TranscriptionResult> {
+  //   if (!openaiApiKey) {
+  //     // Simulate transcription fallback
+  //     return new Promise((resolve) => {
+  //       setTimeout(() => {
+  //         resolve({
+  //           text: "Simulated transcription: We met with Ceres Grain Corp and Gregory Peck to buy Alfalfa Seed for forty thousand dollars, closing in December.",
+  //           isMock: true,
+  //         });
+  //       }, 1500);
+  //     });
+  //   }
+
+  //   try {
+  //     // Live transcription via OpenAI Whisper API
+  //     const formData = new FormData();
+
+  //     // Construct file object
+  //     const filename = audioUri.split('/').pop() || 'recording.m4a';
+  //     const match = /\.(\w+)$/.exec(filename);
+  //     const ext = match ? match[1] : 'm4a';
+  //     const type = `audio/${ext}`;
+
+  //     formData.append('file', {
+  //       uri: audioUri,
+  //       name: filename,
+  //       type,
+  //     } as any);
+  //     formData.append('model', 'whisper-1');
+
+  //     if (customVocabulary && customVocabulary.length > 0) {
+  //       formData.append('prompt', customVocabulary.join(', '));
+  //     }
+
+  //     const response = await fetch('https://audio-to-text-model-resource.cognitiveservices.azure.com/openai/deployments/gpt-4o-mini-transcribe/audio/transcriptions?api-version=2025-03-01-preview', {
+  //       method: 'POST',
+  //       headers: {
+  //         Authorization: `Bearer ${openaiApiKey}`,
+  //         'Content-Type': 'multipart/form-data',
+  //       },
+  //       body: formData,
+  //     });
+
+  //     if (!response.ok) {
+  //       const errText = await response.text();
+  //       throw new Error(`Whisper API error: ${response.status} - ${errText}`);
+  //     }
+
+  //     const data = await response.json();
+  //     return {
+  //       text: data.text,
+  //       isMock: false,
+  //     };
+  //   } catch (error) {
+  //     console.error('Transcription error, falling back to simulation', error);
+  //     throw error;
+  //   }
+  // }
 
   getMockTranscriptForScenario(scenarioId: string): string {
     const scenario = demoScenarios.find((s) => s.id === scenarioId);
@@ -235,68 +314,67 @@ class TranscriptionService {
   async startLiveRecognition(handlers: SpeechRecognitionHandlers): Promise<void> {
     this.speechHandlers = handlers;
 
-    // 1. Try Web Speech API if in Browser
-    if (typeof window !== 'undefined') {
-      if (!this.webSpeechRecognition) {
-        this.initWebSpeech();
-      }
-      if (this.webSpeechRecognition) {
-        try {
-          this.webSpeechRecognition.start();
-          return;
-        } catch (e) {
-          console.error('Failed to start Web speech recognition:', e);
-        }
-      }
-    }
-
-    // 2. Try Native Speech Recognition
     try {
-      if (isVoiceNativeSupported && ExpoSpeechRecognitionModule) {
-        this.clearNativeSubscriptions();
-
-        this.nativeSubscriptions = [
-          ExpoSpeechRecognitionModule.addListener('start', () => {
-            if (this.speechHandlers?.onSpeechStart) {
-              this.speechHandlers.onSpeechStart();
-            }
-          }),
-          ExpoSpeechRecognitionModule.addListener('result', (event: any) => {
-            let transcript = '';
-            if (event.results) {
-              for (let i = 0; i < event.results.length; i++) {
-                if (event.results[i]) {
-                  transcript += event.results[i].transcript || '';
-                }
-              }
-            }
-            if (this.speechHandlers?.onSpeechResults) {
-              this.speechHandlers.onSpeechResults(transcript);
-            }
-            if (this.speechHandlers?.onSpeechPartialResults) {
-              this.speechHandlers.onSpeechPartialResults(transcript);
-            }
-          }),
-          ExpoSpeechRecognitionModule.addListener('error', (event: any) => {
-            if (this.speechHandlers?.onSpeechError) {
-              this.speechHandlers.onSpeechError(event.message || event.error || 'Native speech error');
-            }
-          }),
-          ExpoSpeechRecognitionModule.addListener('end', () => {
-            if (this.speechHandlers?.onSpeechEnd) {
-              this.speechHandlers.onSpeechEnd('');
-            }
-          }),
-        ];
-
-        ExpoSpeechRecognitionModule.start({
-          lang: 'en-US',
-          interimResults: true,
-          continuous: true,
-        });
-      } else {
-        throw new Error('Native Voice module is not available or supported in this client.');
+      if (this.activeRecognition) {
+        try {
+          this.activeRecognition.stop();
+        } catch (e) {}
       }
+
+      const recognition = new ExpoWebSpeechRecognition();
+      recognition.continuous = true;
+      recognition.interimResults = true;
+      recognition.lang = 'en-US';
+
+      recognition.onstart = () => {
+        if (this.speechHandlers?.onSpeechStart) {
+          this.speechHandlers.onSpeechStart();
+        }
+      };
+
+      recognition.onresult = (event: any) => {
+        let interimTranscript = '';
+        let finalTranscript = '';
+
+        for (let i = 0; i < event.results.length; ++i) {
+          const result = event.results[i];
+          const alternative = result[0];
+          if (alternative) {
+            const text = alternative.transcript || '';
+            if (result.isFinal) {
+              finalTranscript += text;
+            } else {
+              interimTranscript += text;
+            }
+          }
+        }
+
+        const fullTranscript = (finalTranscript + interimTranscript).trim();
+
+        if (this.speechHandlers?.onSpeechPartialResults) {
+          this.speechHandlers.onSpeechPartialResults(fullTranscript);
+        }
+        if (this.speechHandlers?.onSpeechResults) {
+          this.speechHandlers.onSpeechResults(fullTranscript);
+        }
+      };
+
+      recognition.onerror = (event: any) => {
+        console.error('Speech recognition error event:', event);
+        if (this.speechHandlers?.onSpeechError) {
+          this.speechHandlers.onSpeechError(event.error || 'Speech recognition error');
+        }
+      };
+
+      recognition.onend = () => {
+        if (this.speechHandlers?.onSpeechEnd) {
+          this.speechHandlers.onSpeechEnd('');
+        }
+      };
+
+      this.activeRecognition = recognition;
+      recognition.start();
+
     } catch (err: any) {
       console.warn('Speech recognition not available. Falling back to simulator mode:', err.message || err);
       if (this.speechHandlers?.onSpeechError) {
@@ -306,23 +384,13 @@ class TranscriptionService {
   }
 
   async stopLiveRecognition(): Promise<void> {
-    // Stop Web
-    if (typeof window !== 'undefined' && this.webSpeechRecognition) {
+    if (this.activeRecognition) {
       try {
-        this.webSpeechRecognition.stop();
+        this.activeRecognition.stop();
       } catch (e) {
-        console.error(e);
+        console.error('Error stopping Speech Recognition:', e);
       }
-    }
-
-    // Stop Native
-    try {
-      if (isVoiceNativeSupported && ExpoSpeechRecognitionModule) {
-        ExpoSpeechRecognitionModule.stop();
-        this.clearNativeSubscriptions();
-      }
-    } catch (err: any) {
-      console.error('Error stopping native Speech Recognition:', err.message || err);
+      this.activeRecognition = null;
     }
   }
 }

@@ -15,7 +15,7 @@ const Info = LucideInfo as any;
 
 interface VoiceRecorderProps {
   activeProfile: RepProfile;
-  onTranscriptionComplete: (text: string, durationSec: number) => void;
+  onTranscriptionComplete: (audioUri: string | null, text: string, durationSec: number) => void;
   isOnline: boolean;
 }
 
@@ -26,10 +26,9 @@ export const VoiceRecorder: React.FC<VoiceRecorderProps> = ({
 }) => {
   const [selectedScenario, setSelectedScenario] = useState<DemoScenario | null>(demoScenarios[0]);
   const [isRecording, setIsRecording] = useState(false);
-  const [isProcessing, setIsProcessing] = useState(false);
   const [seconds, setSeconds] = useState(0);
   const [liveTranscript, setLiveTranscript] = useState('');
-  
+
   const timerRef = useRef<NodeJS.Timeout | null>(null);
   const typingTimerRef = useRef<NodeJS.Timeout | null>(null);
   const pulseAnim = useRef(new Animated.Value(1)).current;
@@ -89,18 +88,18 @@ export const VoiceRecorder: React.FC<VoiceRecorderProps> = ({
     setLiveTranscript('');
     let index = 0;
     const words = fullText.split(' ');
-    
+
     const typeWord = () => {
       if (index < words.length) {
         setLiveTranscript((prev) => (prev ? prev + ' ' + words[index] : words[index]));
         index++;
-        
+
         // Dynamic reading speed between 200ms and 400ms per word
         const nextDelay = 180 + Math.random() * 200;
         typingTimerRef.current = setTimeout(typeWord, nextDelay);
       }
     };
-    
+
     // Start after a brief pause
     typingTimerRef.current = setTimeout(typeWord, 1000);
   };
@@ -161,42 +160,28 @@ export const VoiceRecorder: React.FC<VoiceRecorderProps> = ({
       await transcriptionService.stopLiveRecognition();
     }
 
-    setIsProcessing(true);
-
     try {
       // Stop hardware recording and get file info
       const { uri, durationMs } = await transcriptionService.stopRecording();
       audioUriRef.current = uri;
       const durationSec = Math.max(Math.round(durationMs / 1000), seconds);
 
-      // Perform translation/extraction (demo vs live)
-      let finalTranscript = liveTranscript;
-      
       if (selectedScenario) {
-        // In scenario mode, use the verified correct text
-        finalTranscript = selectedScenario.transcript;
+        onTranscriptionComplete(null, selectedScenario.transcript, durationSec);
       } else {
-        // Simple native speech to text for only custom/real microphone
+        let nativeTranscript = liveTranscript;
         if (
-          !liveTranscript ||
-          liveTranscript === 'Listening... Speak now.' ||
-          liveTranscript.startsWith('Listening... Speak') ||
-          liveTranscript.startsWith('Voice recognition is not supported')
+          nativeTranscript === 'Listening... Speak now.' ||
+          nativeTranscript.startsWith('Listening... Speak') ||
+          nativeTranscript.startsWith('Voice recognition is not supported')
         ) {
-          finalTranscript = '';
+          nativeTranscript = '';
         }
+        onTranscriptionComplete(uri, nativeTranscript, durationSec);
       }
-
-      // Add a small artificial wait for AI extraction feel
-      setTimeout(() => {
-        setIsProcessing(false);
-        onTranscriptionComplete(finalTranscript, durationSec);
-      }, 2000);
-
     } catch (error) {
       console.error(error);
-      setIsProcessing(false);
-      onTranscriptionComplete("Failed to transcribe note due to API or file error.", seconds);
+      onTranscriptionComplete(null, '', seconds);
     }
   };
 
@@ -212,7 +197,7 @@ export const VoiceRecorder: React.FC<VoiceRecorderProps> = ({
       <View style={styles.scenarioCard}>
         <Text style={styles.scenarioCardTitle}>Active Demo Scenario Selector</Text>
         <Text style={styles.scenarioCardDesc}>Select a pre-built customer visit scenario to simulate speech transcription.</Text>
-        
+
         <ScrollView horizontal={true} showsHorizontalScrollIndicator={false} style={styles.scenariosScroll}>
           <TouchableOpacity
             style={[styles.scenarioChip, selectedScenario === null && styles.scenarioChipActive]}
@@ -260,14 +245,8 @@ export const VoiceRecorder: React.FC<VoiceRecorderProps> = ({
         {/* Waveform / Visualizer */}
         <View style={styles.waveformContainer}>
           <WaveformVisualizer isRecording={isRecording} />
-          {(!isRecording && !isProcessing && liveTranscript === '') && (
+          {(!isRecording && liveTranscript === '') && (
             <Text style={styles.instructionText}>Press the Mic to start recording visit notes</Text>
-          )}
-          {isProcessing && (
-            <View style={styles.processingRow}>
-              <ActivityIndicator size="small" color={theme.colors.accent} style={{ marginRight: 8 }} />
-              <Text style={styles.processingText}>AI extracting structured CRM fields...</Text>
-            </View>
           )}
         </View>
 
@@ -315,9 +294,8 @@ export const VoiceRecorder: React.FC<VoiceRecorderProps> = ({
             </Animated.View>
           ) : (
             <TouchableOpacity
-              style={[styles.button, styles.buttonRecord, isProcessing && styles.buttonDisabled]}
+              style={[styles.button, styles.buttonRecord]}
               onPress={handleStartRecording}
-              disabled={isProcessing}
               activeOpacity={0.8}
             >
               <Mic size={32} color="#FFFFFF" />

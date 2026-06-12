@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, TextInput, ScrollView, Switch } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   User as LucideUser,
   Shield as LucideShield,
@@ -42,10 +43,32 @@ export const RepProfileSelector: React.FC<RepProfileSelectorProps> = ({
   const [profiles, setProfiles] = useState<RepProfile[]>(mockProfiles);
   const [newVocab, setNewVocab] = useState('');
   
+  // Edit active profile states
+  const [editName, setEditName] = useState(activeProfile.name);
+  const [editTitle, setEditTitle] = useState(activeProfile.title);
+  const [editTerritory, setEditTerritory] = useState(activeProfile.territory);
+
+  // Add new profile states
+  const [showAddProfile, setShowAddProfile] = useState(false);
+  const [newName, setNewName] = useState('');
+  const [newTitle, setNewTitle] = useState('');
+  const [newTerritory, setNewTerritory] = useState('');
+
+  // Shortname mapping states
+  const [newShort, setNewShort] = useState('');
+  const [newFull, setNewFull] = useState('');
+
   // Credentials panel
-  const [keys, setKeys] = useState<ApiCredentials>({ openrouter: '', openrouterModel: '' });
+  const [keys, setKeys] = useState<ApiCredentials>({ geminiKey: '' });
   const [sfConfig, setSfConfig] = useState({ instanceUrl: '', accessToken: '', isLive: false });
   const [credentialsSaved, setCredentialsSaved] = useState(false);
+
+  // Sync edit states when active profile changes
+  useEffect(() => {
+    setEditName(activeProfile.name);
+    setEditTitle(activeProfile.title);
+    setEditTerritory(activeProfile.territory);
+  }, [activeProfile]);
 
   useEffect(() => {
     const loadConfig = async () => {
@@ -54,9 +77,93 @@ export const RepProfileSelector: React.FC<RepProfileSelectorProps> = ({
 
       const sfActiveConfig = await salesforceService.getConfig();
       setSfConfig(sfActiveConfig);
+
+      const storedProfiles = await AsyncStorage.getItem('fv_rep_profiles');
+      if (storedProfiles) {
+        setProfiles(JSON.parse(storedProfiles));
+      }
     };
     loadConfig();
-  }, []);
+  }, [activeProfile]);
+
+  const handleSaveProfileDetails = () => {
+    if (!editName.trim() || !editTerritory.trim()) {
+      alert('Name and Territory are required fields.');
+      return;
+    }
+    const updatedProfile: RepProfile = {
+      ...activeProfile,
+      name: editName.trim(),
+      title: editTitle.trim(),
+      territory: editTerritory.trim(),
+    };
+    onProfileUpdate(updatedProfile);
+    alert('Representative Profile Details updated successfully!');
+  };
+
+  const handleAddProfile = async () => {
+    if (!newName.trim() || !newTerritory.trim()) {
+      alert('Name and Territory are required fields for creating a new profile.');
+      return;
+    }
+
+    const newProfile: RepProfile = {
+      id: `rep-${Date.now()}`,
+      name: newName.trim(),
+      title: newTitle.trim(),
+      territory: newTerritory.trim(),
+      customVocabulary: [],
+      contactShortnames: [],
+    };
+
+    const storedProfiles = await AsyncStorage.getItem('fv_rep_profiles');
+    let currentProfiles: RepProfile[] = storedProfiles ? JSON.parse(storedProfiles) : mockProfiles;
+    
+    currentProfiles.push(newProfile);
+    await AsyncStorage.setItem('fv_rep_profiles', JSON.stringify(currentProfiles));
+    setProfiles(currentProfiles);
+    onProfileChange(newProfile);
+
+    setNewName('');
+    setNewTitle('');
+    setNewTerritory('');
+    setShowAddProfile(false);
+
+    alert(`Profile for ${newProfile.name} created and set as active.`);
+  };
+
+  const handleAddShortname = () => {
+    const short = newShort.trim();
+    const full = newFull.trim();
+    if (!short || !full) {
+      alert('Both spoken shortname and full Salesforce name are required.');
+      return;
+    }
+
+    const shortnames = activeProfile.contactShortnames || [];
+    const exists = shortnames.some((c) => c.short.toLowerCase() === short.toLowerCase());
+    if (exists) {
+      alert(`Short name "${short}" is already mapped.`);
+      return;
+    }
+
+    const updatedProfile: RepProfile = {
+      ...activeProfile,
+      contactShortnames: [...shortnames, { short, full }],
+    };
+    onProfileUpdate(updatedProfile);
+    setNewShort('');
+    setNewFull('');
+  };
+
+  const handleRemoveShortname = (shortToRemove: string) => {
+    const shortnames = activeProfile.contactShortnames || [];
+    const updatedProfile: RepProfile = {
+      ...activeProfile,
+      contactShortnames: shortnames.filter((c) => c.short !== shortToRemove),
+    };
+    onProfileUpdate(updatedProfile);
+  };
 
   const handleSaveCredentials = async () => {
     await offlineManager.saveKeys(keys);
@@ -113,6 +220,88 @@ export const RepProfileSelector: React.FC<RepProfileSelectorProps> = ({
             );
           })}
         </View>
+
+        {/* Add New Profile Expander */}
+        <TouchableOpacity 
+          style={styles.addProfileToggleBtn} 
+          onPress={() => setShowAddProfile(!showAddProfile)}
+        >
+          <Text style={styles.addProfileToggleText}>
+            {showAddProfile ? '- Cancel New Profile' : '+ Create New Representative Profile'}
+          </Text>
+        </TouchableOpacity>
+
+        {showAddProfile && (
+          <View style={styles.addProfileForm}>
+            <TextInput
+              style={styles.formInput}
+              value={newName}
+              onChangeText={setNewName}
+              placeholder="Representative Full Name"
+              placeholderTextColor="#64748B"
+            />
+            <TextInput
+              style={styles.formInput}
+              value={newTitle}
+              onChangeText={setNewTitle}
+              placeholder="Job Title (e.g. Sales Executive)"
+              placeholderTextColor="#64748B"
+            />
+            <TextInput
+              style={styles.formInput}
+              value={newTerritory}
+              onChangeText={setNewTerritory}
+              placeholder="Active Territory (e.g. Mid-West)"
+              placeholderTextColor="#64748B"
+            />
+            <TouchableOpacity style={styles.createBtn} onPress={handleAddProfile}>
+              <Text style={styles.createBtnText}>Create & Set Active</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+      </View>
+
+      {/* 1B. EDIT ACTIVE PROFILE */}
+      <View style={styles.section}>
+        <View style={styles.sectionHeader}>
+          <User size={16} color={theme.colors.primaryLight} style={styles.sectionIcon} />
+          <Text style={styles.sectionTitle}>Edit Active Profile Details</Text>
+        </View>
+
+        <View style={styles.formGroup}>
+          <Text style={styles.label}>Rep Name</Text>
+          <TextInput
+            style={styles.input}
+            value={editName}
+            onChangeText={setEditName}
+            placeholder="Name"
+            placeholderTextColor="#64748B"
+          />
+        </View>
+        <View style={styles.formGroup}>
+          <Text style={styles.label}>Job Title</Text>
+          <TextInput
+            style={styles.input}
+            value={editTitle}
+            onChangeText={setEditTitle}
+            placeholder="Title"
+            placeholderTextColor="#64748B"
+          />
+        </View>
+        <View style={styles.formGroup}>
+          <Text style={styles.label}>Active Territory</Text>
+          <TextInput
+            style={styles.input}
+            value={editTerritory}
+            onChangeText={setEditTerritory}
+            placeholder="Territory"
+            placeholderTextColor="#64748B"
+          />
+        </View>
+
+        <TouchableOpacity style={styles.saveBtn} onPress={handleSaveProfileDetails}>
+          <Text style={styles.saveBtnText}>Save Profile Info</Text>
+        </TouchableOpacity>
       </View>
 
       {/* 2. LIVE INTEGRATIONS & CREDENTIALS */}
@@ -123,12 +312,12 @@ export const RepProfileSelector: React.FC<RepProfileSelectorProps> = ({
         </View>
 
         <View style={styles.formGroup}>
-          <Text style={styles.label}>OpenRouter API Key (Optional)</Text>
+          <Text style={styles.label}>Google Gemini API Key (Optional)</Text>
           <TextInput
             style={styles.input}
-            value={keys.openrouter}
-            onChangeText={(val) => setKeys((prev) => ({ ...prev, openrouter: val }))}
-            placeholder="sk-or-..."
+            value={keys.geminiKey || ''}
+            onChangeText={(val) => setKeys((prev) => ({ ...prev, geminiKey: val }))}
+            placeholder="AIzaSy..."
             placeholderTextColor="#64748B"
             secureTextEntry={true}
           />
@@ -136,15 +325,44 @@ export const RepProfileSelector: React.FC<RepProfileSelectorProps> = ({
         </View>
 
         <View style={styles.formGroup}>
-          <Text style={styles.label}>OpenRouter Model Choice</Text>
+          <Text style={styles.label}>Azure Speech API Key (Optional)</Text>
           <TextInput
             style={styles.input}
-            value={keys.openrouterModel}
-            onChangeText={(val) => setKeys((prev) => ({ ...prev, openrouterModel: val }))}
-            placeholder="openai/gpt-oss-120b"
+            value={keys.azureSpeechKey || ''}
+            onChangeText={(val) => setKeys((prev) => ({ ...prev, azureSpeechKey: val }))}
+            placeholder="Azure API Subscription Key"
             placeholderTextColor="#64748B"
+            secureTextEntry={true}
           />
+          <Text style={styles.hint}>Used to run custom Azure speech-to-text transcription on audio files.</Text>
         </View>
+
+        {(keys.azureSpeechKey || '').trim() !== '' && (
+          <>
+            <View style={styles.formGroup}>
+              <Text style={styles.label}>Azure Speech Region</Text>
+              <TextInput
+                style={styles.input}
+                value={keys.azureSpeechRegion || ''}
+                onChangeText={(val) => setKeys((prev) => ({ ...prev, azureSpeechRegion: val }))}
+                placeholder="eastus"
+                placeholderTextColor="#64748B"
+              />
+            </View>
+
+            <View style={styles.formGroup}>
+              <Text style={styles.label}>Azure Custom Endpoint URL (Optional)</Text>
+              <TextInput
+                style={styles.input}
+                value={keys.azureSpeechEndpoint || ''}
+                onChangeText={(val) => setKeys((prev) => ({ ...prev, azureSpeechEndpoint: val }))}
+                placeholder="https://resource.openai.azure.com/..."
+                placeholderTextColor="#64748B"
+              />
+              <Text style={styles.hint}>Used for custom Whisper deployments on Azure. If empty, uses standard Cognitive Speech API.</Text>
+            </View>
+          </>
+        )}
 
         <View style={styles.formGroup}>
           <View style={styles.offlineToggleRow}>
@@ -253,6 +471,52 @@ export const RepProfileSelector: React.FC<RepProfileSelectorProps> = ({
               <Text style={styles.vocabChipText}>{vocab}</Text>
               <TouchableOpacity onPress={() => handleRemoveVocab(vocab)}>
                 <Trash2 size={12} color={theme.colors.dangerLight} style={{ marginLeft: 6 }} />
+              </TouchableOpacity>
+            </View>
+          ))}
+        </View>
+      </View>
+
+      {/* 5. CONTACT SHORTNAME MAPPING */}
+      <View style={styles.section}>
+        <View style={styles.sectionHeader}>
+          <User size={16} color={theme.colors.primaryLight} style={styles.sectionIcon} />
+          <Text style={styles.sectionTitle}>Contact Name Abbreviation Mapping</Text>
+        </View>
+        <Text style={styles.descText}>
+          Map short spoken names to their full Salesforce contact names so that the AI can resolve them accurately (e.g. "Greg" maps to "Gregory Peck").
+        </Text>
+
+        <View style={styles.vocabInputRow}>
+          <TextInput
+            style={[styles.input, { flex: 1, marginRight: 6, marginBottom: 0 }]}
+            value={newShort}
+            onChangeText={setNewShort}
+            placeholder="Spoken (e.g. Greg)"
+            placeholderTextColor="#64748B"
+          />
+          <TextInput
+            style={[styles.input, { flex: 1, marginBottom: 0 }]}
+            value={newFull}
+            onChangeText={setNewFull}
+            placeholder="Full (e.g. Gregory Peck)"
+            placeholderTextColor="#64748B"
+          />
+          <TouchableOpacity style={styles.addBtn} onPress={handleAddShortname}>
+            <Plus size={16} color="#FFFFFF" />
+          </TouchableOpacity>
+        </View>
+
+        <View style={styles.mappingsContainer}>
+          {(activeProfile.contactShortnames || []).map((mapping, idx) => (
+            <View key={idx} style={styles.mappingItem}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.mappingItemText}>
+                  "{mapping.short}" <Text style={{ color: theme.colors.accent }}>➔</Text> "{mapping.full}"
+                </Text>
+              </View>
+              <TouchableOpacity onPress={() => handleRemoveShortname(mapping.short)}>
+                <Trash2 size={12} color={theme.colors.dangerLight} />
               </TouchableOpacity>
             </View>
           ))}
@@ -420,6 +684,72 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 11,
     fontWeight: '500',
+  },
+  addProfileToggleBtn: {
+    paddingVertical: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#0F1522',
+    borderWidth: 1,
+    borderColor: '#1D283E',
+    borderRadius: theme.borderRadius.sm,
+    marginTop: theme.spacing.md,
+  },
+  addProfileToggleText: {
+    color: theme.colors.primaryLight,
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  addProfileForm: {
+    marginTop: theme.spacing.md,
+    backgroundColor: '#0F1522',
+    borderWidth: 1,
+    borderColor: '#1D283E',
+    borderRadius: theme.borderRadius.sm,
+    padding: theme.spacing.md,
+  },
+  formInput: {
+    backgroundColor: '#070A11',
+    borderWidth: 1,
+    borderColor: '#182235',
+    borderRadius: theme.borderRadius.sm,
+    color: '#FFFFFF',
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    fontSize: 13,
+    marginBottom: theme.spacing.sm,
+  },
+  createBtn: {
+    backgroundColor: theme.colors.primary,
+    paddingVertical: 8,
+    borderRadius: theme.borderRadius.sm,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  createBtnText: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  mappingsContainer: {
+    marginTop: theme.spacing.sm,
+  },
+  mappingItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#0F1626',
+    borderWidth: 1,
+    borderColor: '#1D283E',
+    borderRadius: theme.borderRadius.sm,
+    paddingVertical: 6,
+    paddingHorizontal: theme.spacing.md,
+    marginBottom: 6,
+  },
+  mappingItemText: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontWeight: '600',
   },
 });
 

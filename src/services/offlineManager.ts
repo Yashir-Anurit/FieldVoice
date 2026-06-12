@@ -67,6 +67,13 @@ class OfflineManager {
     return newNote;
   }
 
+  // Add a pre-processed/synced note directly to the queue
+  async addSyncedNote(note: OfflineNote): Promise<OfflineNote> {
+    this.queue.unshift(note);
+    await this.saveQueue();
+    return note;
+  }
+
   // Update a note in the queue
   async updateNote(id: string, updates: Partial<OfflineNote>) {
     const index = this.queue.findIndex((n) => n.id === id);
@@ -87,15 +94,24 @@ class OfflineManager {
 
   // Save API Credentials
   async saveKeys(keys: ApiCredentials) {
-    await AsyncStorage.setItem('fv_keys_openrouter', keys.openrouter);
-    await AsyncStorage.setItem('fv_keys_openrouter_model', keys.openrouterModel);
+    await AsyncStorage.setItem('fv_keys_gemini_key', keys.geminiKey || '');
+    await AsyncStorage.setItem('fv_keys_azure_speech_key', keys.azureSpeechKey || '');
+    await AsyncStorage.setItem('fv_keys_azure_speech_region', keys.azureSpeechRegion || '');
+    await AsyncStorage.setItem('fv_keys_azure_speech_endpoint', keys.azureSpeechEndpoint || '');
   }
 
   // Get API Credentials
   async getKeys(): Promise<ApiCredentials> {
-    const openrouter = (await AsyncStorage.getItem('fv_keys_openrouter')) || '';
-    const openrouterModel = (await AsyncStorage.getItem('fv_keys_openrouter_model')) || 'openai/gpt-oss-120b';
-    return { openrouter, openrouterModel };
+    const geminiKey = (await AsyncStorage.getItem('fv_keys_gemini_key')) || '';
+    const azureSpeechKey = (await AsyncStorage.getItem('fv_keys_azure_speech_key')) || '';
+    const azureSpeechRegion = (await AsyncStorage.getItem('fv_keys_azure_speech_region')) || 'eastus';
+    const azureSpeechEndpoint = (await AsyncStorage.getItem('fv_keys_azure_speech_endpoint')) || '';
+    return { 
+      geminiKey,
+      azureSpeechKey,
+      azureSpeechRegion,
+      azureSpeechEndpoint
+    };
   }
 
   // Get simulate offline status
@@ -116,10 +132,12 @@ class OfflineManager {
   }
 
   // Run background sync on pending items (FR-4.4, FR-4.5)
-  async checkAndSyncQueue() {
+  async checkAndSyncQueue(forceAll: boolean = false) {
     if (this.simulateOffline) return;
 
-    const pendingNotes = this.queue.filter((n) => n.syncStatus === 'pending');
+    const pendingNotes = this.queue.filter((n) => 
+      n.syncStatus === 'pending' || (forceAll && n.syncStatus === 'failed')
+    );
     if (pendingNotes.length === 0) return;
 
     const keys = await this.getKeys();
@@ -134,13 +152,12 @@ class OfflineManager {
         const profile = profiles.find((p: any) => p.id === note.repProfileId) || mockProfiles[0];
         
         let extractedData;
-        if (keys.openrouter) {
-          // Live extraction via OpenRouter
-          extractedData = await llmService.queryOpenRouter(
+        if (keys.geminiKey) {
+          // Live extraction via Gemini
+          extractedData = await llmService.queryGemini(
             note.transcript,
             profile,
-            keys.openrouter,
-            keys.openrouterModel
+            keys.geminiKey
           );
         } else {
           // Fallback to simulated extraction

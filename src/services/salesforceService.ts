@@ -150,7 +150,7 @@ class SalesforceService {
     if (config.isLive && config.accessToken && config.instanceUrl) {
       try {
         const response = await fetch(
-          `${config.instanceUrl}/services/data/v60.0/query/?q=SELECT+Id,Name,StageName,Amount,CloseDate,AccountId+FROM+Opportunity+LIMIT+100`,
+          `${config.instanceUrl}/services/data/v60.0/query/?q=SELECT+Id,Name,StageName,Amount,CloseDate,AccountId,Account.Name+FROM+Opportunity+LIMIT+100`,
           {
             headers: {
               Authorization: `Bearer ${config.accessToken}`,
@@ -167,6 +167,7 @@ class SalesforceService {
             amount: r.Amount ? String(r.Amount) : '0',
             closeDate: r.CloseDate || '',
             accountId: r.AccountId || '',
+            accountName: r.Account ? r.Account.Name : 'No Account',
           }));
           await AsyncStorage.setItem('sf_cached_opportunities', JSON.stringify(records));
           this.localOpportunities = records;
@@ -177,6 +178,193 @@ class SalesforceService {
       }
     }
     return this.localOpportunities;
+  }
+
+  // Update an existing Opportunity
+  async updateOpportunity(
+    id: string,
+    updates: { name: string; stage: string; amount: string; closeDate: string }
+  ): Promise<{ success: boolean; error?: string }> {
+    const config = await this.getConfig();
+    let apiSuccess = false;
+    let apiError = '';
+
+    if (config.isLive && config.accessToken && config.instanceUrl) {
+      try {
+        const response = await fetch(`${config.instanceUrl}/services/data/v60.0/sobjects/Opportunity/${id}`, {
+          method: 'PATCH',
+          headers: {
+            Authorization: `Bearer ${config.accessToken}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            Name: updates.name,
+            StageName: updates.stage,
+            Amount: parseFloat(updates.amount || '0') || 0,
+            CloseDate: updates.closeDate,
+          }),
+        });
+
+        if (response.ok) {
+          apiSuccess = true;
+        } else {
+          apiError = await response.text();
+          console.warn('Salesforce Opportunity update request failed:', apiError);
+        }
+      } catch (err: any) {
+        apiError = err.message || 'Network error updating Opportunity.';
+        console.warn('Salesforce Opportunity update failed with network error:', err);
+      }
+    } else {
+      apiSuccess = true;
+    }
+
+    // Always update local cache
+    const index = this.localOpportunities.findIndex((o) => o.id === id);
+    if (index !== -1) {
+      this.localOpportunities[index] = {
+        ...this.localOpportunities[index],
+        name: updates.name,
+        stage: updates.stage,
+        amount: updates.amount,
+        closeDate: updates.closeDate,
+      };
+      await AsyncStorage.setItem('sf_cached_opportunities', JSON.stringify(this.localOpportunities));
+    }
+
+    if (apiSuccess) {
+      return { success: true };
+    }
+    return { success: false, error: apiError || 'Offline / local cache sync only.' };
+  }
+
+  // Delete an existing Opportunity
+  async deleteOpportunity(id: string): Promise<{ success: boolean; error?: string }> {
+    const config = await this.getConfig();
+    let apiSuccess = false;
+    let apiError = '';
+
+    if (config.isLive && config.accessToken && config.instanceUrl) {
+      try {
+        const response = await fetch(`${config.instanceUrl}/services/data/v60.0/sobjects/Opportunity/${id}`, {
+          method: 'DELETE',
+          headers: {
+            Authorization: `Bearer ${config.accessToken}`,
+          },
+        });
+
+        if (response.ok) {
+          apiSuccess = true;
+        } else {
+          apiError = await response.text();
+          console.warn('Salesforce Opportunity delete request failed:', apiError);
+        }
+      } catch (err: any) {
+        apiError = err.message || 'Network error deleting Opportunity.';
+        console.warn('Salesforce Opportunity delete failed with network error:', err);
+      }
+    } else {
+      apiSuccess = true;
+    }
+
+    // Always update local cache
+    this.localOpportunities = this.localOpportunities.filter((o) => o.id !== id);
+    await AsyncStorage.setItem('sf_cached_opportunities', JSON.stringify(this.localOpportunities));
+
+    if (apiSuccess) {
+      return { success: true };
+    }
+    return { success: false, error: apiError || 'Offline / local cache sync only.' };
+  }
+
+  // Create Opportunity manually (Explorer)
+  async createOpportunity(opp: {
+    accountName: string;
+    opportunityName: string;
+    stage: string;
+    amount: string;
+    closeDate: string;
+  }): Promise<{ success: boolean; error?: string }> {
+    const config = await this.getConfig();
+    let opportunityId = `opp-${Date.now()}`;
+    let accountId = `acc-${Date.now()}`;
+    let apiSuccess = false;
+    let apiError = '';
+
+    if (config.isLive && config.accessToken && config.instanceUrl) {
+      try {
+        // Step 1: Find or Create Account
+        const accMatches = await this.findAccountMatches(opp.accountName);
+        if (accMatches.length > 0) {
+          accountId = accMatches[0].id;
+        } else {
+          const accRes = await fetch(`${config.instanceUrl}/services/data/v60.0/sobjects/Account`, {
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${config.accessToken}`,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ Name: opp.accountName }),
+          });
+          if (accRes.ok) {
+            const accData = await accRes.json();
+            accountId = accData.id;
+          } else {
+            const errTxt = await accRes.text();
+            throw new Error(`Salesforce Account creation failed: ${errTxt}`);
+          }
+        }
+
+        // Step 2: Create Opportunity
+        const oppRes = await fetch(`${config.instanceUrl}/services/data/v60.0/sobjects/Opportunity`, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${config.accessToken}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            Name: opp.opportunityName,
+            StageName: opp.stage,
+            Amount: parseFloat(opp.amount || '0') || 0,
+            CloseDate: opp.closeDate,
+            AccountId: accountId,
+          }),
+        });
+
+        if (oppRes.ok) {
+          const oppData = await oppRes.json();
+          opportunityId = oppData.id;
+          apiSuccess = true;
+        } else {
+          const errTxt = await oppRes.text();
+          throw new Error(`Salesforce Opportunity creation failed: ${errTxt}`);
+        }
+      } catch (err: any) {
+        apiError = err.message || 'Error creating Opportunity.';
+        console.error('Salesforce manual Opportunity creation failed:', err);
+      }
+    } else {
+      apiSuccess = true;
+    }
+
+    // Save to local cache
+    const newOpportunity: Opportunity = {
+      id: opportunityId,
+      name: opp.opportunityName,
+      stage: opp.stage,
+      amount: opp.amount,
+      closeDate: opp.closeDate,
+      accountId: accountId,
+      accountName: opp.accountName,
+    };
+
+    this.localOpportunities.unshift(newOpportunity);
+    await AsyncStorage.setItem('sf_cached_opportunities', JSON.stringify(this.localOpportunities));
+
+    if (apiSuccess) {
+      return { success: true };
+    }
+    return { success: false, error: apiError || 'Offline / local cache sync only.' };
   }
 
   // Account disambiguation lookup
@@ -229,6 +417,9 @@ class SalesforceService {
           if (accRes.ok) {
             const accData = await accRes.json();
             accountId = accData.id;
+          } else {
+            const errTxt = await accRes.text();
+            throw new Error(`Salesforce Account creation failed: ${errTxt}`);
           }
         }
 

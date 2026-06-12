@@ -1,12 +1,16 @@
 import React, { useState, useEffect } from 'react';
-import { StyleSheet, View, Text, SafeAreaView, TouchableOpacity, ScrollView, Alert, StatusBar } from 'react-native';
+import { StyleSheet, View, Text, SafeAreaView, TouchableOpacity, ScrollView, Alert, StatusBar, ActivityIndicator, Modal } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   Mic as LucideMic,
   History as LucideHistory,
   Settings as LucideSettings,
   FileAudio as LucideFileAudio,
-  CheckCircle2 as LucideCheckCircle2
+  CheckCircle2 as LucideCheckCircle2,
+  FileText as LucideFileText,
+  Brain as LucideBrain,
+  Check as LucideCheck,
+  Database as LucideDatabase
 } from 'lucide-react-native';
 
 import theme from './src/theme';
@@ -15,12 +19,15 @@ import { RepProfile, OfflineNote, ExtractedData } from './src/types';
 import { mockProfiles } from './src/services/mockData';
 import { salesforceService } from './src/services/salesforceService';
 import { offlineManager } from './src/services/offlineManager';
+import { llmService } from './src/services/llmService';
+import { transcriptionService } from './src/services/transcriptionService';
 
 import VoiceRecorder from './src/components/VoiceRecorder';
 import ReviewCard from './src/components/ReviewCard';
 import SyncStatusBanner from './src/components/SyncStatusBanner';
 import RepProfileSelector from './src/components/RepProfileSelector';
 import HistoryQueue from './src/components/HistoryQueue';
+import CrmExplorer from './src/components/CrmExplorer';
 
 // Cast icons to bypass React 19 Lucide types check conflict
 const Mic = LucideMic as any;
@@ -28,9 +35,13 @@ const History = LucideHistory as any;
 const Settings = LucideSettings as any;
 const FileAudio = LucideFileAudio as any;
 const CheckCircle2 = LucideCheckCircle2 as any;
+const FileText = LucideFileText as any;
+const Brain = LucideBrain as any;
+const Check = LucideCheck as any;
+const Database = LucideDatabase as any;
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'record' | 'history' | 'settings'>('record');
+  const [activeTab, setActiveTab] = useState<'record' | 'history' | 'explorer' | 'settings'>('record');
   const [activeProfile, setActiveProfile] = useState<RepProfile>(mockProfiles[0]);
   
   const [isOnline, setIsOnline] = useState(true);
@@ -43,6 +54,7 @@ export default function App() {
 
   const [showSyncSuccess, setShowSyncSuccess] = useState(false);
   const [syncedAccountName, setSyncedAccountName] = useState('');
+  const [processingState, setProcessingState] = useState<'idle' | 'transcribing' | 'extracting'>('idle');
 
   useEffect(() => {
     const startup = async () => {
@@ -103,20 +115,23 @@ export default function App() {
     await offlineManager.setSimulateOffline(val);
   };
 
-  const handleTranscriptionComplete = async (transcript: string, durationSec: number) => {
-    const newNoteId = `note-${Date.now()}`;
-    
-    const noteData: Omit<OfflineNote, 'syncStatus'> = {
-      id: newNoteId,
-      timestamp: new Date().toISOString(),
-      duration: durationSec,
-      transcript,
-      extractedData: null,
-      repProfileId: activeProfile.id,
-    };
-
-    // If Offline: Save to queue and keep as pending review once sync completes
+  const handleTranscriptionComplete = async (
+    audioUri: string | null,
+    nativeTranscript: string,
+    durationSec: number
+  ) => {
+    // If Offline: Save to queue as pending so that it processes later
     if (!isOnline) {
+      const newNoteId = `note-${Date.now()}`;
+      const noteData: Omit<OfflineNote, 'syncStatus'> = {
+        id: newNoteId,
+        timestamp: new Date().toISOString(),
+        duration: durationSec,
+        transcript: nativeTranscript || 'Offline voice note audio capture',
+        extractedData: null,
+        repProfileId: activeProfile.id,
+      };
+
       await offlineManager.addToQueue(noteData);
       Alert.alert(
         'Note Queued Offline',
@@ -126,43 +141,66 @@ export default function App() {
       return;
     }
 
-    // If Online: Add to queue, process sync immediately, and open Review Card modal
-    const addedNote = await offlineManager.addToQueue(noteData);
-    
-    // Poll for the background extraction sync status to complete
-    let attempts = 0;
-    const maxAttempts = 20; // 10 seconds max
-    
-    const checkStatus = setInterval(async () => {
-      attempts++;
-      const refreshedQueue = await offlineManager.getQueue();
-      const currentNote = refreshedQueue.find((n) => n.id === addedNote.id);
-      
-      if (currentNote) {
-        if (currentNote.syncStatus === 'synced' && currentNote.extractedData) {
-          clearInterval(checkStatus);
-          setActiveReviewNote(currentNote);
-          setReviewData(currentNote.extractedData);
-          setShowReviewScreen(true);
-        } else if (currentNote.syncStatus === 'failed') {
-          clearInterval(checkStatus);
-          Alert.alert(
-            'Sync / Extraction Failed',
-            currentNote.errorMessage || 'AI extraction failed. You can edit it manually from the Sync Queue.'
+    // If Online: Start foreground sequential processing
+    const newNoteId = `note-${Date.now()}`;
+    let finalTranscript = nativeTranscript;
+
+    try {
+      if (audioUri) {
+        setProcessingState('transcribing');
+        try {
+          const result = await transcriptionService.transcribeAudio(
+            audioUri,
+            activeProfile.customVocabulary
           );
-          setActiveTab('history');
+          if (result && result.text) {
+            finalTranscript = result.text;
+          }
+        } catch (err) {
+          console.warn('Azure audio file transcription failed, using native speech fallback:', err);
         }
       }
-      
-      if (attempts >= maxAttempts) {
-        clearInterval(checkStatus);
-        Alert.alert(
-          'Processing Note',
-          'The AI is taking longer than usual. You can find and review this note in the Sync Queue once complete.'
+
+      setProcessingState('extracting');
+      const keys = await offlineManager.getKeys();
+      let extractedData: ExtractedData;
+
+      if (keys.geminiKey) {
+        extractedData = await llmService.queryGemini(
+          finalTranscript || 'No transcription text captured.',
+          activeProfile,
+          keys.geminiKey
         );
-        setActiveTab('history');
+      } else {
+        extractedData = llmService.simulateExtraction(
+          finalTranscript || 'No transcription text captured.',
+          activeProfile
+        );
       }
-    }, 500);
+
+      setProcessingState('idle');
+
+      const completedNote: OfflineNote = {
+        id: newNoteId,
+        timestamp: new Date().toISOString(),
+        duration: durationSec,
+        transcript: finalTranscript || 'No transcription text captured.',
+        extractedData,
+        repProfileId: activeProfile.id,
+        syncStatus: 'synced',
+      };
+
+      const addedNote = await offlineManager.addSyncedNote(completedNote);
+      
+      setActiveReviewNote(addedNote);
+      setReviewData(extractedData);
+      setShowReviewScreen(true);
+
+    } catch (err) {
+      console.error('Foreground processing failed:', err);
+      setProcessingState('idle');
+      Alert.alert('Processing Error', 'An error occurred while processing your voice note.');
+    }
   };
 
   const handleSyncSubmit = async (finalData: ExtractedData) => {
@@ -210,7 +248,7 @@ export default function App() {
   };
 
   const handleManualSyncTrigger = async () => {
-    await offlineManager.checkAndSyncQueue();
+    await offlineManager.checkAndSyncQueue(true);
   };
 
   const handleDeleteNote = async (id: string) => {
@@ -307,6 +345,10 @@ export default function App() {
               onToggleSimulatedOffline={handleToggleSimulatedOffline}
             />
           )}
+
+          {activeTab === 'explorer' && (
+            <CrmExplorer />
+          )}
         </View>
       )}
 
@@ -336,6 +378,15 @@ export default function App() {
           </TouchableOpacity>
 
           <TouchableOpacity
+            style={[styles.navItem, activeTab === 'explorer' && styles.navItemActive]}
+            onPress={() => setActiveTab('explorer')}
+            activeOpacity={0.8}
+          >
+            <Database size={20} color={activeTab === 'explorer' ? '#FFFFFF' : theme.colors.textMuted} />
+            <Text style={[styles.navText, activeTab === 'explorer' && styles.navTextActive]}>CRM Explorer</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
             style={[styles.navItem, activeTab === 'settings' && styles.navItemActive]}
             onPress={() => setActiveTab('settings')}
             activeOpacity={0.8}
@@ -345,6 +396,94 @@ export default function App() {
           </TouchableOpacity>
         </View>
       )}
+
+      {/* 2-Stage Glassmorphic Processing Loading Overlay */}
+      <Modal
+        transparent={true}
+        visible={processingState !== 'idle'}
+        animationType="fade"
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.loadingContainer}>
+            <Text style={styles.loadingHeader}>Processing Visit Notes</Text>
+            <Text style={styles.loadingSubtitle}>Converting speech and mapping CRM fields</Text>
+
+            {/* Step 1: Transcription Process */}
+            <View style={[
+              styles.stepRow,
+              processingState === 'transcribing' && styles.stepRowActive,
+              processingState === 'extracting' && styles.stepRowCompleted
+            ]}>
+              <View style={[
+                styles.stepIconContainer,
+                processingState === 'transcribing' && styles.stepIconActive,
+                processingState === 'extracting' && styles.stepIconCompleted
+              ]}>
+                <FileText size={20} color={
+                  processingState === 'extracting' ? '#10B981' : 
+                  processingState === 'transcribing' ? theme.colors.primaryLight : '#475569'
+                } />
+              </View>
+              <View style={styles.stepContent}>
+                <Text style={[
+                  styles.stepTitle,
+                  processingState === 'transcribing' && styles.stepTitleActive,
+                  processingState === 'extracting' && styles.stepTitleCompleted
+                ]}>Step 1: Audio Transcription</Text>
+                <Text style={styles.stepDescription}>
+                  {processingState === 'transcribing'
+                    ? 'Converting audio files via Azure Cognitive STT...'
+                    : processingState === 'extracting'
+                    ? 'Audio transcription successfully completed.'
+                    : 'Awaiting recording completion...'}
+                </Text>
+              </View>
+              <View style={styles.stepStatus}>
+                {processingState === 'transcribing' ? (
+                  <ActivityIndicator size="small" color={theme.colors.primaryLight} />
+                ) : processingState === 'extracting' ? (
+                  <Check size={18} color="#10B981" />
+                ) : null}
+              </View>
+            </View>
+
+            {/* Divider */}
+            <View style={styles.stepDivider} />
+
+            {/* Step 2: AI Mapping the CRM Fields */}
+            <View style={[
+              styles.stepRow,
+              processingState === 'extracting' && styles.stepRowActive
+            ]}>
+              <View style={[
+                styles.stepIconContainer,
+                processingState === 'extracting' && styles.stepIconActive
+              ]}>
+                <Brain size={20} color={
+                  processingState === 'extracting' ? theme.colors.accent : '#475569'
+                } />
+              </View>
+              <View style={styles.stepContent}>
+                <Text style={[
+                  styles.stepTitle,
+                  processingState === 'extracting' && styles.stepTitleActive
+                ]}>Step 2: AI Salesforce Mapping</Text>
+                <Text style={styles.stepDescription}>
+                  {processingState === 'extracting'
+                    ? 'Extracting structured details via Google Gemini...'
+                    : 'Awaiting audio transcription...'}
+                </Text>
+              </View>
+              <View style={styles.stepStatus}>
+                {processingState === 'extracting' ? (
+                  <ActivityIndicator size="small" color={theme.colors.accent} />
+                ) : null}
+              </View>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
     </SafeAreaView>
   );
 }
@@ -480,5 +619,105 @@ const styles = StyleSheet.create({
     fontSize: 11,
     lineHeight: 16,
     marginTop: 4,
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(5, 8, 16, 0.9)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: theme.spacing.lg,
+  },
+  loadingContainer: {
+    backgroundColor: '#0B1120',
+    borderWidth: 1,
+    borderColor: '#1E293B',
+    borderRadius: theme.borderRadius.lg,
+    padding: theme.spacing.lg,
+    width: '100%',
+    maxWidth: 340,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.5,
+    shadowRadius: 20,
+    elevation: 10,
+  },
+  loadingHeader: {
+    color: '#FFFFFF',
+    fontSize: 18,
+    fontWeight: '800',
+    textAlign: 'center',
+  },
+  loadingSubtitle: {
+    color: theme.colors.textMuted,
+    fontSize: 12,
+    textAlign: 'center',
+    marginTop: 4,
+    marginBottom: theme.spacing.lg,
+  },
+  stepRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: theme.spacing.md,
+    borderRadius: theme.borderRadius.md,
+    backgroundColor: '#0F172A',
+    borderWidth: 1,
+    borderColor: '#1E293B',
+    opacity: 0.5,
+  },
+  stepRowActive: {
+    opacity: 1,
+    borderColor: theme.colors.primary,
+    backgroundColor: 'rgba(168, 85, 247, 0.05)',
+  },
+  stepRowCompleted: {
+    opacity: 0.9,
+    borderColor: '#1E293B',
+    backgroundColor: '#0F172A',
+  },
+  stepIconContainer: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: '#1E293B',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: theme.spacing.md,
+  },
+  stepIconActive: {
+    backgroundColor: 'rgba(168, 85, 247, 0.15)',
+  },
+  stepIconCompleted: {
+    backgroundColor: 'rgba(16, 185, 129, 0.1)',
+  },
+  stepContent: {
+    flex: 1,
+  },
+  stepTitle: {
+    color: '#64748B',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  stepTitleActive: {
+    color: '#FFFFFF',
+  },
+  stepTitleCompleted: {
+    color: '#10B981',
+  },
+  stepDescription: {
+    color: theme.colors.textMuted,
+    fontSize: 10,
+    marginTop: 2,
+    lineHeight: 14,
+  },
+  stepStatus: {
+    width: 24,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  stepDivider: {
+    height: 20,
+    width: 2,
+    backgroundColor: '#1E293B',
+    marginLeft: 35,
   },
 });

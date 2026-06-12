@@ -1,4 +1,3 @@
-import { OpenRouter } from '@openrouter/sdk';
 import { RepProfile, ExtractedData } from '../types';
 import { mockAccounts, mockContacts, mockProductCategories } from './mockData';
 
@@ -38,12 +37,11 @@ class LlmService {
     };
   }
 
-  // Streams OpenRouter request using the user-specified SDK format (FR-2.1, FR-2.3)
-  async queryOpenRouter(
+  // Queries Google Gemini API (gemini-1.5-flash) for fast, structured extraction (free tier)
+  async queryGemini(
     transcript: string,
     profile: RepProfile,
-    apiKey: string,
-    modelName: string = 'openrouter/free'
+    apiKey: string
   ): Promise<ExtractedData> {
     const prompt = `You are a Salesforce CRM assistant. Your job is to extract structured fields from a Sales Rep's visit notes transcript.
 Analyze the transcript and fill out the JSON fields.
@@ -63,9 +61,9 @@ Rules for Extraction:
 7. "nextSteps": Extract follow-up tasks.
 8. "textSummary": Provide a 1-sentence professional summary of the meeting.
 
-You must respond ONLY with a single JSON block. Do not include any reasoning, introduction, markdown markers or conversational fillers.
+You must respond ONLY with a single JSON block matching the schema below. Do NOT include any markdown styling like \`\`\`json or conversational wrappers.
 
-JSON format:
+JSON Schema:
 {
   "accountName": "string",
   "contactNames": ["string"],
@@ -75,55 +73,49 @@ JSON format:
   "estimatedCloseDate": "string",
   "nextSteps": "string",
   "textSummary": "string"
-}
-
-Transcript:
-"${transcript}"`;
+}`;
 
     try {
-      // Initialize OpenRouter SDK exactly as requested
-      const openrouter = new OpenRouter({
-        apiKey: apiKey,
-      });
-
-      // Stream the response to get reasoning tokens in usage
-      const stream = await openrouter.chat.send({
-        chatRequest: {
-          model: modelName || 'openrouter/free',
-          messages: [
-            {
-              role: 'user',
-              content: prompt,
-            },
-          ],
-          stream: true,
+      const url = `https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
         },
+        body: JSON.stringify({
+          contents: [
+            {
+              parts: [
+                {
+                  text: prompt + `\n\nTranscript:\n"${transcript}"`
+                }
+              ]
+            }
+          ],
+        })
       });
 
-      console.log('OpenRouter Stream Started' + prompt);
-
-      let responseText = '';
-      for await (const chunk of (stream as any)) {
-        const content = chunk.choices[0]?.delta?.content;
-        if (content) {
-          responseText += content;
-        }
-
-        // Catch reasoning tokens if provided
-        if (chunk.usage && (chunk.usage as any).reasoningTokens) {
-          console.log('Reasoning tokens:', (chunk.usage as any).reasoningTokens);
-        }
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Gemini API responded with status ${response.status}: ${errorText}`);
       }
 
-      console.log('OpenRouter Response:', responseText);
-      const extracted = this.parseJsonFromResponse(responseText);
+      const data = await response.json();
+      const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+
+      if (!text) {
+        throw new Error('Empty response from Gemini API');
+      }
+
+      console.log('Gemini response text:', text);
+      const extracted = this.parseJsonFromResponse(text);
       if (!extracted.accountName && extracted.textSummary.includes('Failed to parse')) {
-        console.warn('Regex JSON extraction failed, falling back to simulated extraction.');
+        console.warn('Gemini JSON extraction failed, falling back to simulated extraction.');
         return this.simulateExtraction(transcript, profile);
       }
       return extracted;
     } catch (error) {
-      console.warn('OpenRouter query failed, falling back to simulated extraction:', error);
+      console.warn('Gemini query failed, falling back to simulated extraction:', error);
       return this.simulateExtraction(transcript, profile);
     }
   }
